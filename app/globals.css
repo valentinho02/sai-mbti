@@ -3,3 +3,4 @@
 /* Keep narrow embedded and mobile previews inside their available width. */
 .hero-copy,.question,.test-shell>aside{min-width:0}.facts{flex-wrap:wrap}.intro{overflow-wrap:anywhere}
 @media(max-width:800px){.hero,.test-shell{grid-template-columns:minmax(0,1fr)}.art{width:min(365px,100%);min-width:0}.orbit{max-width:100%}.art-tag{left:40px;max-width:calc(100% - 40px);white-space:normal}.actions{gap:16px}.type-card{padding:28px 20px}.type-card strong{font-size:clamp(45px,14vw,67px);letter-spacing:5px}.facts{line-height:1.9}}
+.error p{margin:0 0 8px}.error small{display:block;overflow-wrap:anywhere}.error details{margin-top:12px}.error summary{cursor:pointer}.error dl{font-size:11px;line-height:1.8}.error dt{font-weight:700;margin-top:9px}.error dd{margin:0;overflow-wrap:anywhere}

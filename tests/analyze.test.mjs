@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {analyze} from '../lib/analyze.ts';
+import {failure,logFailure} from '../lib/errors.ts';
+const answers=Array.from({length:12},()=> '혼자 생각을 정리하면 편안해져요.');
+const request=(body={consent:true,answers})=>new Request('http://local/api/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:typeof body==='string'?body:JSON.stringify(body)});
+const items=answers.map((a,i)=>({id:i+1,score:1,evidence:true,quote:a,reason:'선택 이유에서 선호를 확인했습니다.'}));
+const output=(value={items},extra={})=>Response.json({status:'completed',output:[{content:[{type:'output_text',text:JSON.stringify(value)}]}],...extra});
+async function run(fetcher,req=request(),more={}){const logs=[];const response=await analyze(req,{apiKey:'test-key',fetcher,writeLog:s=>logs.push(JSON.parse(s)),...more});return {response,body:await response.json(),logs};}
+for(const [label,status,error,code] of [
+ ['quota',429,{code:'credit_balance_exhausted',type:'insufficient_quota'},'API_QUOTA'],
+ ['authentication',401,{},'API_AUTH'],['access',403,{},'API_ACCESS'],['model',404,{},'API_ACCESS'],['rate limit',429,{code:'rate_limit_exceeded'},'API_RATE_LIMIT'],['outage',503,{},'API_UNAVAILABLE']]){
+ test(label,async()=>{const x=await run(async()=>Response.json({error:{...error,message:'private upstream data'}},{status}));assert.equal(x.body.diagnostic.code,code);assert.equal(x.body.diagnostic.source,'lib/analyze.ts');assert.equal(x.body.diagnostic.upstreamStatus,status);assert.equal(x.response.headers.get('x-request-id'),x.body.diagnostic.requestId);assert.ok(!JSON.stringify(x).includes('private upstream data'));});
+}
+test('malformed JSON is a client input error without an API call',async()=>{let called=false;const x=await run(async()=>{called=true;return output();},request('{'));assert.equal(x.response.status,400);assert.equal(x.body.diagnostic.code,'INVALID_JSON');assert.equal(called,false);});
+test('invalid consent never calls the provider',async()=>{let called=false;const x=await run(async()=>{called=true;return output();},request({answers,consent:false}));assert.equal(x.body.diagnostic.code,'INVALID_INPUT');assert.equal(called,false);});
+test('body size is enforced even without Content-Length',async()=>{const x=await run(async()=>output(),request(' '.repeat(100001)));assert.equal(x.response.status,413);});
+test('missing key',async()=>{const x=await run(async()=>output(),request(),{apiKey:''});assert.equal(x.body.diagnostic.code,'NOT_CONFIGURED');});
+test('timeout differs from network failure',async()=>{for(const [error,code] of [[new DOMException('sensitive','TimeoutError'),'API_TIMEOUT'],[new TypeError('sensitive'),'API_NETWORK']]){const x=await run(async()=>{throw error});assert.equal(x.body.diagnostic.code,code);assert.ok(!JSON.stringify(x).includes('sensitive'));}});
+test('refusal and incomplete output are distinct',async()=>{const refusal=await run(async()=>Response.json({status:'completed',output:[{content:[{type:'refusal',refusal:'private'}]}]}));assert.equal(refusal.body.diagnostic.code,'MODEL_REFUSAL');const incomplete=await run(async()=>output({items},{status:'incomplete'}));assert.equal(incomplete.body.diagnostic.code,'MODEL_INCOMPLETE');});
+test('invalid model JSON',async()=>{const x=await run(async()=>Response.json({status:'completed',output:[{content:[{type:'output_text',text:'no JSON'}]}]}));assert.equal(x.body.diagnostic.code,'MODEL_JSON');});
+test('invented quotes, duplicate ids, bad scores and no-evidence inconsistency are rejected',async()=>{for(const patch of [{quote:'not in answer'},{id:2},{score:3},{evidence:false,score:1,quote:''}]){const changed=items.map(i=>({...i}));Object.assign(changed[0],patch);const x=await run(async()=>output({items:changed}));assert.equal(x.body.diagnostic.code,'INVALID_RESULT');}});
+test('scoring faults point to assessment.ts',async()=>{const x=await run(async()=>output(),request(),{calculate:()=>{throw Error('secret')}});assert.equal(x.body.diagnostic.source,'lib/assessment.ts');assert.equal(x.body.diagnostic.code,'SCORING_FAILED');});
+test('success sorts items and sends all answers and rubric once',async()=>{let count=0;const x=await run(async(url,init)=>{count++;const body=JSON.parse(init.body);assert.equal(body.store,false);const input=JSON.parse(body.input);assert.deepEqual(input.answers,answers);assert.equal(input.questions.length,12);assert.equal(input.rubric.version,'1.0');return output({items:[...items].reverse()});});assert.equal(x.response.status,200);assert.equal(count,1);assert.equal(x.body.items[0].id,1);assert.equal(x.body.axes.length,4);assert.equal(x.logs.length,0);});
+test('logs discard arbitrary raw error fields',()=>{const value=failure('API_AUTH','test-id');value.raw='sk-proj-fake-private-key';value.diagnostic.reason='private answer';const logs=[];logFailure(value,s=>logs.push(s));assert.ok(!logs[0].includes('private'));assert.ok(!logs[0].includes('sk-proj'));assert.equal(JSON.parse(logs[0]).source,'lib/analyze.ts');});
